@@ -6,7 +6,7 @@ backend/settings_manager.py
 动态更新与原子落盘，为健康巡检、安全鉴权、代理网关及日志清理提供统一的配置支撑。
 
 主要功能：
-1. SettingsModel: 系统配置数据结构校验（含检查周期、超时、代理、面板密码、API Key、日志保留策略）。
+1. SettingsModel: 系统配置数据结构校验（含检查周期、单账号默认并发数、超时、代理、面板密码、API Key、日志保留策略）。
 2. SettingsManager: 单例管理类，提供 get_settings() 与 update_settings() 接口，支持原子写入。
 """
 
@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 class SettingsModel(BaseModel):
     health_check_interval_minutes: int = Field(default=30, ge=1, le=1440, description="账号有效性自动检查周期(分钟)")
+    default_account_concurrency: int = Field(default=2, ge=1, le=20, description="单账号默认最大并发数")
     auto_disable_expired: bool = Field(default=True, description="Cookie失效时是否自动禁用账号")
     failover_retry: bool = Field(default=True, description="请求失败或受限时是否自动重试下一账号")
     timeout_seconds: int = Field(default=30, ge=5, le=300, description="单个请求超时时间(秒)")

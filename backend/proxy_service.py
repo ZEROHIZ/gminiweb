@@ -4,7 +4,7 @@ backend/proxy_service.py
 核心职责：
 对外标准 API 网关与请求代理服务。
 实现 OpenAI 规范兼容的 `/v1/chat/completions` 与 `/v1/images/generations` 接口分发，
-集成多账号池轮询调度、单账号并发信号量隔离、故障自动转移（Failover）以及高保真审计日志入库。
+集成多账号池最少活跃连接调度、单账号可配置并发信号量隔离、故障自动转移（Failover）以及高保真审计日志入库。
 
 主要功能：
 1. handle_chat_completion: 兼容 OpenAI 格式对话完成接口。
@@ -87,14 +87,18 @@ class ProxyService:
                 )
                 account = acc
 
-                async with sem:
-                    target_model = None if req.model in ("default", "auto", "gemini-default", "") else req.model
-                    output = await client.generate_content(
-                        prompt=prompt,
-                        model=target_model,
-                    )
-                    # 检查是否有自动更新的 Cookie 并回写
-                    account_manager.persist_cookies_if_changed(acc.id, client)
+                account_manager.increment_active(acc.id)
+                try:
+                    async with sem:
+                        target_model = None if req.model in ("default", "auto", "gemini-default", "") else req.model
+                        output = await client.generate_content(
+                            prompt=prompt,
+                            model=target_model,
+                        )
+                        # 检查是否有自动更新的 Cookie 并回写
+                        account_manager.persist_cookies_if_changed(acc.id, client)
+                finally:
+                    account_manager.decrement_active(acc.id)
 
                 duration = time.time() - start_time
                 reply_text = getattr(output, "text", "") or ""
@@ -202,17 +206,21 @@ class ProxyService:
                 )
                 account = acc
 
-                async with sem:
-                    # 提示词强化与模型映射
-                    gen_prompt = req.prompt
-                    target_model = None
-                    if req.model and req.model not in ("imagen-3.0-generate-002", "dall-e-3", "default", "auto", "gemini-default"):
-                        target_model = req.model
-                    output = await client.generate_content(
-                        prompt=gen_prompt,
-                        model=target_model,
-                    )
-                    account_manager.persist_cookies_if_changed(acc.id, client)
+                account_manager.increment_active(acc.id)
+                try:
+                    async with sem:
+                        # 提示词强化与模型映射
+                        gen_prompt = req.prompt
+                        target_model = None
+                        if req.model and req.model not in ("imagen-3.0-generate-002", "dall-e-3", "default", "auto", "gemini-default"):
+                            target_model = req.model
+                        output = await client.generate_content(
+                            prompt=gen_prompt,
+                            model=target_model,
+                        )
+                        account_manager.persist_cookies_if_changed(acc.id, client)
+                finally:
+                    account_manager.decrement_active(acc.id)
 
                 duration = time.time() - start_time
                 images = getattr(output, "images", []) or []

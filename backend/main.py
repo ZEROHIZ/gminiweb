@@ -124,6 +124,7 @@ class AddAccountRequest(BaseModel):
     remark: str = ""
     proxy: str | None = None
     is_enabled: bool = True
+    concurrency_limit: int | None = None
 
 
 class UpdateAccountRequest(BaseModel):
@@ -134,6 +135,7 @@ class UpdateAccountRequest(BaseModel):
     proxy: str | None = None
     is_enabled: bool | None = None
     status: str | None = None
+    concurrency_limit: int | None = None
 
 
 @app.get("/api/accounts", dependencies=[Depends(verify_panel_auth)])
@@ -153,6 +155,7 @@ async def add_account(req: AddAccountRequest):
             remark=req.remark,
             proxy=req.proxy,
             is_enabled=req.is_enabled,
+            concurrency_limit=req.concurrency_limit,
         )
         return {"success": True, "account": acc}
     except Exception as e:
@@ -172,6 +175,7 @@ async def update_account(account_id: str, req: UpdateAccountRequest):
             proxy=req.proxy,
             is_enabled=req.is_enabled,
             status=req.status,
+            concurrency_limit=req.concurrency_limit,
         )
         return {"success": True, "account": acc}
     except Exception as e:
@@ -194,6 +198,7 @@ async def get_account_detail(account_id: str):
         "is_enabled": acc.is_enabled,
         "status": acc.status,
         "models": acc.models or [],
+        "concurrency_limit": acc.concurrency_limit,
     }
 
 

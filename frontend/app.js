@@ -207,7 +207,12 @@ function renderAccounts() {
           <span class="status-dot ${dotClass}"></span>
           <span>${escapeHtml(acc.email)}</span>
         </div>
-        <span class="badge ${statusBadgeClass}">[${statusText}]</span>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span class="badge-concurrency ${acc.active_connections >= (acc.effective_concurrency || 2) ? 'busy' : ''}" title="当前活动请求数 / 最大并发上限">
+            ⚡ 并发: ${acc.active_connections || 0}/${acc.effective_concurrency || 2}${acc.concurrency_limit ? ' (独立)' : ''}
+          </span>
+          <span class="badge ${statusBadgeClass}">[${statusText}]</span>
+        </div>
       </div>
 
       <div class="acc-card-body">
@@ -430,6 +435,7 @@ function openAccountModal(accountData = null) {
     document.getElementById('input-acc-id').value = accountData.id;
     document.getElementById('input-acc-remark').value = accountData.remark || accountData.email || '';
     document.getElementById('input-acc-proxy').value = accountData.proxy || '';
+    document.getElementById('input-acc-concurrency').value = accountData.concurrency_limit || '';
     document.getElementById('check-acc-enabled').checked = accountData.is_enabled;
 
     const psid = accountData.secure_1psid || '';
@@ -463,6 +469,7 @@ function openAccountModal(accountData = null) {
     document.getElementById('input-acc-id').value = '';
     document.getElementById('input-acc-remark').value = '';
     document.getElementById('input-acc-proxy').value = '';
+    document.getElementById('input-acc-concurrency').value = '';
     document.getElementById('check-acc-enabled').checked = true;
     document.getElementById('input-acc-cookie').placeholder = '📋 在此粘贴包含 __Secure-1PSID 与 __Secure-1PSIDTS 的完整 JSON、数组或标头，粘贴后下方将实时自动拆分填入两个 Key！';
     document.getElementById('input-acc-psid').placeholder = 'g.a8i... / g.a000... (必填)';
@@ -535,6 +542,8 @@ async function loadSettings() {
 
     document.getElementById('check-auto-disable').checked = !!data.auto_disable_expired;
     document.getElementById('check-failover-retry').checked = !!data.failover_retry;
+    const defConcurrencyEl = document.getElementById('input-default-concurrency');
+    if (defConcurrencyEl) defConcurrencyEl.value = data.default_account_concurrency || 2;
     document.getElementById('input-timeout').value = data.timeout_seconds || 30;
     document.getElementById('input-proxy').value = data.global_proxy || '';
     document.getElementById('input-panel-password').value = data.panel_password || '';
@@ -562,6 +571,7 @@ async function saveSettings(e) {
 
   const payload = {
     health_check_interval_minutes: interval,
+    default_account_concurrency: parseInt(document.getElementById('input-default-concurrency')?.value) || 2,
     auto_disable_expired: document.getElementById('check-auto-disable').checked,
     failover_retry: document.getElementById('check-failover-retry').checked,
     timeout_seconds: parseInt(document.getElementById('input-timeout').value) || 30,
@@ -1235,6 +1245,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const id = document.getElementById('input-acc-id').value;
     const remark = document.getElementById('input-acc-remark').value.trim();
     const proxy = document.getElementById('input-acc-proxy').value.trim();
+    const concurrencyVal = document.getElementById('input-acc-concurrency').value.trim();
+    const concurrencyLimit = concurrencyVal ? parseInt(concurrencyVal) : null;
     const isEnabled = document.getElementById('check-acc-enabled').checked;
 
     if (!remark) {
@@ -1266,6 +1278,7 @@ document.addEventListener('DOMContentLoaded', () => {
             psidts: psidtsPayload || undefined,
             proxy,
             is_enabled: isEnabled,
+            concurrency_limit: concurrencyLimit,
           })
         });
         showToast('账号信息更新成功', 'success');
@@ -1279,6 +1292,7 @@ document.addEventListener('DOMContentLoaded', () => {
             psidts: psidtsPayload,
             proxy,
             is_enabled: isEnabled,
+            concurrency_limit: concurrencyLimit,
           })
         });
         showToast('账号凭据添加成功', 'success');

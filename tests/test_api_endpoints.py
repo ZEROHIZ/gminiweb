@@ -240,4 +240,46 @@ def test_account_health_logs_endpoint(client):
     assert any("单元测试" in item.get("summary", "") for item in data2["items"])
 
 
+def test_configurable_concurrency_and_least_connections(client):
+    """测试单账号并发配置保存与最少活跃连接调度逻辑"""
+    from backend.account_manager import account_manager
+
+    # 1. 添加一个带自定义并发限制的账号
+    res = client.post(
+        "/api/accounts",
+        json={
+            "remark": "并发测试账号",
+            "raw_cookie_or_psid": "g.a000testpsidconcurrency0001",
+            "psidts": "sidts-test0001",
+            "concurrency_limit": 5,
+        },
+    )
+    assert res.status_code == 200
+    acc_id = res.json()["account"]["id"]
+
+    # 2. 获取列表验证 effective_concurrency 与 concurrency_limit
+    res_list = client.get("/api/accounts")
+    assert res_list.status_code == 200
+    target = next((a for a in res_list.json() if a["id"] == acc_id), None)
+    assert target is not None
+    assert target["concurrency_limit"] == 5
+    assert target["effective_concurrency"] == 5
+    assert target["active_connections"] == 0
+
+    # 3. 更新为 3
+    res_update = client.put(f"/api/accounts/{acc_id}", json={"concurrency_limit": 3})
+    assert res_update.status_code == 200
+    assert account_manager.get_concurrency_limit(acc_id) == 3
+
+    # 4. 验证活跃连接计数器与信号量动态更新
+    account_manager.increment_active(acc_id)
+    assert account_manager._active_connections.get(acc_id) == 1
+    account_manager.decrement_active(acc_id)
+    assert account_manager._active_connections.get(acc_id) == 0
+
+    # 清理测试账号
+    account_manager.delete_account(acc_id)
+
+
+
 

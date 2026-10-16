@@ -3,13 +3,13 @@ backend/account_manager.py
 
 核心职责：
 Gemini 多账号生命周期与账号池管理器。负责账号配置持久化（data/accounts.json）、
-多格式 Cookie 智能解析导入、GeminiClient 实例维护与并发保护、动态配额与可用模型更新、
-Cookie 自动轮换刷新监听与持久化回写，以及多账号轮询与故障转移调度。
+多格式 Cookie 智能解析导入、GeminiClient 实例维护、动态并发配额与活跃连接管理、
+Cookie 自动轮换刷新监听与持久化回写，以及最少活跃连接数优先（Least-Connections）智能调度。
 
 主要功能：
 1. parse_cookie_input: 兼容解析纯键值、包裹字典、浏览器插件 JSON 数组及 Cookie 标头。
-2. AccountModel / PublicAccountModel: 账号数据模型与面向前端的敏感数据脱敏模型。
-3. AccountManager: 核心单例，负责账号增删改查、初始化预热、信号量并发隔离、轮询调度与 Cookie 自动持久化回写。
+2. AccountModel / PublicAccountModel: 账号数据模型与面向前端的脱敏模型（含独立并发与活跃连接展示）。
+3. AccountManager: 核心单例，负责账号增删改查、初始化预热、动态可配置并发信号量隔离、Least-Connections 负载均衡与 Cookie 自动持久化回写。
 """
 
 import asyncio
@@ -142,6 +142,7 @@ class AccountModel(BaseModel):
     models: list[str] = Field(default_factory=lambda: ["gemini-2.5-flash", "gemini-2.5-pro"])
     quota_info: dict = Field(default_factory=dict)
     expiration_date: float | None = None
+    concurrency_limit: int | None = Field(default=None, description="单账号最大并发上限，留空沿用系统默认")
 
 
 class PublicAccountModel(BaseModel):
@@ -157,6 +158,9 @@ class PublicAccountModel(BaseModel):
     models: list[str]
     quota_info: dict
     expiration_date: float | None
+    concurrency_limit: int | None = None
+    active_connections: int = 0
+    effective_concurrency: int = 2
 
 
 class AccountManager:
@@ -166,7 +170,8 @@ class AccountManager:
         self.file_path = base_dir / "accounts.json"
         self._accounts: list[AccountModel] = []
         self._clients: dict[str, GeminiClient] = {}
-        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._semaphores: dict[str, tuple[asyncio.Semaphore, int]] = {}
+        self._active_connections: dict[str, int] = {}
         self._rr_index = 0
         self._lock = asyncio.Lock()
         self._load()
@@ -199,6 +204,8 @@ class AccountManager:
         """返回已脱敏保护的账号列表供前端渲染"""
         results = []
         for acc in self._accounts:
+            effective_limit = self.get_concurrency_limit(acc.id)
+            active_count = self._active_connections.get(acc.id, 0)
             results.append(
                 PublicAccountModel(
                     id=acc.id,
@@ -213,6 +220,9 @@ class AccountManager:
                     models=acc.models or ["gemini-2.5-flash", "gemini-2.5-pro"],
                     quota_info=acc.quota_info or {},
                     expiration_date=acc.expiration_date,
+                    concurrency_limit=acc.concurrency_limit,
+                    active_connections=active_count,
+                    effective_concurrency=effective_limit,
                 )
             )
         return results
@@ -231,6 +241,7 @@ class AccountManager:
         remark: str = "",
         proxy: str | None = None,
         is_enabled: bool = True,
+        concurrency_limit: int | None = None,
     ) -> AccountModel:
         """支持单项输入或浏览器插件格式输入直接添加账号"""
         parsed_psid, parsed_psidts, exp_date, extracted_email = parse_cookie_input(raw_cookie_or_psid)
@@ -262,6 +273,8 @@ class AccountManager:
                 existing.proxy = proxy.strip() if proxy and proxy.strip() else existing.proxy
                 existing.is_enabled = is_enabled
                 existing.status = "ACTIVE"
+                if concurrency_limit is not None:
+                    existing.concurrency_limit = concurrency_limit if concurrency_limit > 0 else None
                 if exp_date:
                     existing.expiration_date = exp_date
                 self.save()
@@ -277,6 +290,7 @@ class AccountManager:
             is_enabled=is_enabled,
             status="ACTIVE",
             expiration_date=exp_date,
+            concurrency_limit=concurrency_limit if (concurrency_limit and concurrency_limit > 0) else None,
         )
         self._accounts.append(new_acc)
         self.save()
@@ -292,6 +306,7 @@ class AccountManager:
         proxy: str | None = None,
         is_enabled: bool | None = None,
         status: str | None = None,
+        concurrency_limit: int | None = None,
     ) -> AccountModel:
         acc = self.get_account(account_id)
         if not acc:
@@ -310,6 +325,8 @@ class AccountManager:
             acc.is_enabled = is_enabled
         if status is not None:
             acc.status = status
+        if concurrency_limit is not None:
+            acc.concurrency_limit = concurrency_limit if concurrency_limit > 0 else None
 
         if raw_cookie_or_psid:
             parsed_psid, parsed_psidts, exp_date, extracted_email = parse_cookie_input(raw_cookie_or_psid)
@@ -347,11 +364,32 @@ class AccountManager:
             except Exception:
                 pass
 
+    def get_concurrency_limit(self, account_id: str) -> int:
+        """获取账号的有效并发上限（单账号配置优先，未配置则使用全局配置）"""
+        acc = self.get_account(account_id)
+        if acc and acc.concurrency_limit is not None and acc.concurrency_limit > 0:
+            return acc.concurrency_limit
+        settings = settings_manager.get_settings()
+        return max(1, getattr(settings, "default_account_concurrency", 2))
+
     def get_semaphore(self, account_id: str) -> asyncio.Semaphore:
-        """获取单账号并发信号量（默认并发度为 2）"""
-        if account_id not in self._semaphores:
-            self._semaphores[account_id] = asyncio.Semaphore(2)
-        return self._semaphores[account_id]
+        """获取单账号并发信号量，依据最新并发上限动态维护"""
+        limit = self.get_concurrency_limit(account_id)
+        if account_id in self._semaphores:
+            sem, cur_limit = self._semaphores[account_id]
+            if cur_limit == limit:
+                return sem
+        sem = asyncio.Semaphore(limit)
+        self._semaphores[account_id] = (sem, limit)
+        return sem
+
+    def increment_active(self, account_id: str) -> None:
+        """活动请求计数器 +1"""
+        self._active_connections[account_id] = self._active_connections.get(account_id, 0) + 1
+
+    def decrement_active(self, account_id: str) -> None:
+        """活动请求计数器 -1"""
+        self._active_connections[account_id] = max(0, self._active_connections.get(account_id, 0) - 1)
 
     async def get_or_create_client(self, account_id: str, timeout: float | None = None) -> GeminiClient:
         """获取或创建 GeminiClient 实例"""
@@ -577,9 +615,9 @@ class AccountManager:
 
     async def acquire_account(self, preferred_id: str | None = None) -> Tuple[AccountModel, GeminiClient, asyncio.Semaphore]:
         """
-        从账号池调度可用账号：
+        从账号池智能调度可用账号：
         1. 若指定 preferred_id，优先使用该账号；
-        2. 否则使用 Round-Robin 轮询调度处于启用且健康的账号；
+        2. 否则使用 Least-Connections（最少活跃连接数优先）算法调度处于启用且健康的账号；
         3. 返回 (AccountModel, GeminiClient, Semaphore)。
         """
         async with self._lock:
@@ -590,23 +628,29 @@ class AccountManager:
                 client = await self.get_or_create_client(acc.id)
                 return acc, client, self.get_semaphore(acc.id)
 
-            # 筛选所有启用账号
+            # 筛选所有启用且未过期的健康账号
             enabled_accounts = [a for a in self._accounts if a.is_enabled and a.status != "EXPIRED"]
             if not enabled_accounts:
                 raise GeminiError("没有可用的 Token 进行请求。所有 Token 都处于禁用或失效状态。")
 
-            # 轮询调度
-            count = len(enabled_accounts)
-            for _ in range(count):
-                self._rr_index = (self._rr_index + 1) % count
-                selected = enabled_accounts[self._rr_index]
+            # Least-Connections 调度：
+            # 排序规则：(是否超出并发上限, 当前活跃连接数) 升序
+            def sort_key(account: AccountModel) -> tuple[int, int]:
+                active = self._active_connections.get(account.id, 0)
+                limit = self.get_concurrency_limit(account.id)
+                is_full = 10000 if active >= limit else 0
+                return (is_full + active, 0)
+
+            sorted_accounts = sorted(enabled_accounts, key=sort_key)
+
+            for selected in sorted_accounts:
                 try:
                     client = await self.get_or_create_client(selected.id)
                     return selected, client, self.get_semaphore(selected.id)
                 except Exception:
                     continue
 
-            # 若轮询失败，尝试首个可用
+            # 若上述初始化均异常，尝试首个可用账号
             selected = enabled_accounts[0]
             client = await self.get_or_create_client(selected.id)
             return selected, client, self.get_semaphore(selected.id)
