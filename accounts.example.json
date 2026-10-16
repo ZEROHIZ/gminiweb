@@ -1,0 +1,12 @@
+[
+  {
+    "id": "acc_demo1",
+    "email": "demo@example.com",
+    "remark": "演示账号1",
+    "secure_1psid": "your-__Secure-1PSID-here",
+    "secure_1psidts": "your-__Secure-1PSIDTS-here",
+    "proxy": null,
+    "is_enabled": true,
+    "status": "ACTIVE"
+  }
+]

@@ -1,0 +1,97 @@
+name: 每日自动检查上游更新与构建镜像 (Check Upstream & Docker Build)
+
+on:
+  schedule:
+    # 每天 UTC 19:00（即北京时间次日凌晨 03:00）定时自动执行
+    - cron: '0 19 * * *'
+  push:
+    branches: [ main ]
+  workflow_dispatch: # 支持 GitHub 控制台手动一键强制触发
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出当前仓库代码
+        uses: actions/checkout@v4
+
+      - name: 获取上游仓库最新 Commit SHA
+        id: upstream
+        run: |
+          UPSTREAM_SHA=$(curl -sSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/HanaokaYuzu/Gemini-API/commits/master" | jq -r '.sha')
+          if [ -z "$UPSTREAM_SHA" ] || [ "$UPSTREAM_SHA" = "null" ]; then
+            echo "无法获取上游 SHA，回退为当前时间戳"
+            UPSTREAM_SHA=$(date +%s)
+          fi
+          echo "upstream_sha=${UPSTREAM_SHA}" >> $GITHUB_OUTPUT
+          echo "上游最新 Commit SHA: ${UPSTREAM_SHA}"
+
+      - name: 检查上游版本缓存
+        id: upstream_cache
+        uses: actions/cache@v4
+        with:
+          path: .upstream_cache
+          key: gemini-upstream-${{ steps.upstream.outputs.upstream_sha }}
+
+      - name: 判定是否需要构建镜像
+        id: check_need_build
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发构建"
+            echo "need_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "主分支代码推送触发构建"
+            echo "need_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.upstream_cache.outputs.cache-hit }}" != "true" ]; then
+            echo "检测到上游 Gemini-API 有新版本提交，触发自动更新构建"
+            echo "need_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "上游无更新且本仓库无变动，跳过构建"
+            echo "need_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 记录上游版本缓存标记
+        if: steps.check_need_build.outputs.need_build == 'true'
+        run: |
+          mkdir -p .upstream_cache
+          echo "${{ steps.upstream.outputs.upstream_sha }}" > .upstream_cache/sha.txt
+
+      - name: 设置 Docker Buildx 构建器
+        if: steps.check_need_build.outputs.need_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GitHub Container Registry (GHCR)
+        if: steps.check_need_build.outputs.need_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 提取镜像元数据与名称
+        if: steps.check_need_build.outputs.need_build == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=sha,format=short
+
+      - name: 构建并推送 Docker 镜像 (注入最新上游 SHA 打破缓存)
+        if: steps.check_need_build.outputs.need_build == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CACHE_BUST=${{ steps.upstream.outputs.upstream_sha }}
+            UPSTREAM_REPO=https://github.com/HanaokaYuzu/Gemini-API.git

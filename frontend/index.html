@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini 账号管理面板与网关系统</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="theme-dark">
+  <!-- 顶部主导航 -->
+  <header class="main-header" id="main-header">
+    <div class="header-container">
+      <div class="brand">
+        <div class="brand-logo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <h1 class="brand-title">Gemini Web Gateway</h1>
+          <span class="brand-subtitle">多账号管理与网关系统</span>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" id="nav-tabs">
+        <button type="button" class="tab-btn active" id="tab-btn-accounts" data-tab="tab-accounts">
+          <span class="tab-icon">👤</span> Token 管理
+        </button>
+        <button type="button" class="tab-btn" id="tab-btn-settings" data-tab="tab-settings">
+          <span class="tab-icon">⚙️</span> 系统配置
+        </button>
+        <button type="button" class="tab-btn" id="tab-btn-logs" data-tab="tab-logs">
+          <span class="tab-icon">📜</span> 请求日志
+        </button>
+        <button type="button" class="tab-btn" id="tab-btn-images" data-tab="tab-images">
+          <span class="tab-icon">🖼️</span> 图片管理
+        </button>
+        <button type="button" class="tab-btn" id="tab-btn-test" data-tab="tab-test">
+          <span class="tab-icon">⚡</span> 测试页面
+        </button>
+      </nav>
+
+      <div class="header-actions">
+        <div class="auth-pill" id="auth-status-pill">
+          <span class="status-dot green" id="auth-status-dot"></span>
+          <span class="auth-text" id="auth-status-text">已认证</span>
+        </div>
+        <button type="button" class="btn btn-outline-danger btn-sm" id="btn-logout" title="退出管理登录">
+          <span>🚪</span> 退出
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主体容器 -->
+  <main class="main-content" id="main-content">
+    
+    <!-- ==================== Tab 1: Token 管理 ==================== -->
+    <section class="tab-pane active" id="tab-accounts">
+      <div class="pane-header">
+        <div class="stat-badges">
+          <div class="stat-badge total">
+            <span class="stat-num" id="stat-total-accounts">0</span>
+            <span class="stat-label">账号总数</span>
+          </div>
+          <div class="stat-badge active">
+            <span class="stat-num" id="stat-active-accounts">0</span>
+            <span class="stat-label">🟢 正常运行</span>
+          </div>
+          <div class="stat-badge expired">
+            <span class="stat-num" id="stat-expired-accounts">0</span>
+            <span class="stat-label">🔴 失效禁用</span>
+          </div>
+        </div>
+
+        <div class="pane-actions">
+          <button type="button" class="btn btn-secondary" id="btn-refresh-accounts">
+            <span>🔄</span> 刷新状态
+          </button>
+          <button type="button" class="btn btn-primary" id="btn-add-account-open">
+            <span>➕</span> 添加账号
+          </button>
+        </div>
+      </div>
+
+      <!-- 账号卡片网格 -->
+      <div class="accounts-grid" id="accounts-grid">
+        <!-- 动态渲染卡片 -->
+      </div>
+    </section>
+
+    <!-- ==================== Tab 2: 系统配置 ==================== -->
+    <section class="tab-pane" id="tab-settings">
+      <div class="card settings-card">
+        <div class="card-header">
+          <h2 class="card-title">⚙️ 系统运行与容灾配置</h2>
+          <p class="card-desc">配置将在保存后动态生效，定时巡检任务将自动重置计时，无需重启容器。</p>
+        </div>
+
+        <form id="form-settings" class="settings-form">
+          <!-- 1. 基础检测配置 -->
+          <fieldset class="form-group-fieldset">
+            <legend class="fieldset-legend">1. 账号有效性自动检查周期 (Health Check Interval)</legend>
+            <div class="radio-group" id="radio-interval-group">
+              <label class="radio-label">
+                <input type="radio" name="check_interval_preset" value="10"> 每 10 分钟
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="check_interval_preset" value="30"> 每 30 分钟
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="check_interval_preset" value="60"> 每 1 小时
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="check_interval_preset" value="custom"> 自定义:
+                <input type="number" id="input-custom-interval" min="1" max="1440" class="input-mini" placeholder="分钟"> 分钟
+              </label>
+            </div>
+            <p class="field-help">说明：后台常驻定时任务将按照此周期并发检验所有账号的 Cookie 有效性、刷新 Quotas 额度与可用模型。</p>
+          </fieldset>
+
+          <!-- 2. 自动状态处理与容灾 -->
+          <fieldset class="form-group-fieldset">
+            <legend class="fieldset-legend">2. 自动状态处理与容灾</legend>
+            <label class="checkbox-label">
+              <input type="checkbox" id="check-auto-disable" name="auto_disable_expired">
+              当账号返回 UNAUTHENTICATED (Cookie失效) 时，自动将该账号标记为“禁用”并记录告警日志
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="check-failover-retry" name="failover_retry">
+              请求超时或遇到 Google 429 时自动重试其他可用账号 (账号池自动负载均衡与故障转移)
+            </label>
+          </fieldset>
+
+          <!-- 3. 网络与超时设置 -->
+          <fieldset class="form-group-fieldset">
+            <legend class="fieldset-legend">3. 网络与超时设置</legend>
+            <div class="form-row">
+              <div class="form-field flex-1">
+                <label for="input-timeout" class="field-label">单个请求超时时间 (秒):</label>
+                <input type="number" id="input-timeout" name="timeout_seconds" min="5" max="300" class="input-text" value="30">
+              </div>
+              <div class="form-field flex-2">
+                <label for="input-proxy" class="field-label">默认全局网络代理:</label>
+                <input type="text" id="input-proxy" name="global_proxy" class="input-text" placeholder="http://127.0.0.1:7890 (留空则直连)">
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- 4. 安全与对外访问 -->
+          <fieldset class="form-group-fieldset">
+            <legend class="fieldset-legend">4. 🔒 安全与对外访问</legend>
+            <div class="form-row">
+              <div class="form-field flex-1">
+                <label for="input-panel-password" class="field-label">管理面板登录密码:</label>
+                <input type="password" id="input-panel-password" name="panel_password" class="input-text" placeholder="留空则不开启前端登录密码保护">
+              </div>
+              <div class="form-field flex-1">
+                <label for="input-api-key" class="field-label">API 访问密钥 (API Key):</label>
+                <input type="text" id="input-api-key" name="api_key" class="input-text" placeholder="sk-gemini-xxxx (留空则网关免密)">
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- 5. 数据库与日志维护策略 -->
+          <fieldset class="form-group-fieldset">
+            <legend class="fieldset-legend">5. 📦 数据库与日志维护策略</legend>
+            <div class="form-row">
+              <div class="form-field flex-1">
+                <label for="input-max-logs" class="field-label">最大保留日志条数:</label>
+                <input type="number" id="input-max-logs" name="max_log_entries" min="100" max="500000" class="input-text" value="20000">
+                <span class="field-help">超出自动清理最早日志，防止数据库膨胀卡顿</span>
+              </div>
+              <div class="form-field flex-1">
+                <label for="input-retention-days" class="field-label">日志保留最长天数:</label>
+                <input type="number" id="input-retention-days" name="log_retention_days" min="1" max="365" class="input-text" value="30">
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- 底部操作按钮 -->
+          <div class="settings-actions">
+            <button type="button" class="btn btn-secondary" id="btn-trigger-check-now">
+              <span>⚡</span> 立即执行一次全量账号健康巡检
+            </button>
+            <button type="submit" class="btn btn-primary btn-lg" id="btn-save-settings">
+              <span>💾</span> 保存配置 (无需重启容器，动态立即生效)
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 3: 请求日志 (参考图 1、2、3) ==================== -->
+    <section class="tab-pane" id="tab-logs">
+      <div class="pane-header">
+        <div class="logs-title-area">
+          <h2 class="pane-title">请求日志</h2>
+          <span class="pane-tag">SQLite WAL 审计</span>
+        </div>
+
+        <div class="logs-filter-bar">
+          <select id="select-log-op" class="select-sm">
+            <option value="">全部操作</option>
+            <option value="generate_image">generate_image</option>
+            <option value="chat_completion">chat_completion</option>
+          </select>
+          <select id="select-log-status" class="select-sm">
+            <option value="">全部状态</option>
+            <option value="已完成">已完成</option>
+            <option value="失败">失败</option>
+          </select>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-logs">
+            <span>🗑️</span> 清空
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-refresh-logs">
+            <span>🔄</span> 刷新
+          </button>
+        </div>
+      </div>
+
+      <!-- 日志数据表格 (参考图 1) -->
+      <div class="table-container">
+        <table class="data-table" id="table-logs">
+          <thead>
+            <tr>
+              <th style="width: 130px;">操作</th>
+              <th style="width: 180px;">Token邮箱</th>
+              <th style="width: 90px;">状态</th>
+              <th style="width: 70px;">进度</th>
+              <th style="width: 80px;">状态码</th>
+              <th>结果摘要</th>
+              <th style="width: 90px;">耗时(秒)</th>
+              <th style="width: 160px;">时间</th>
+              <th style="width: 80px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="logs-tbody">
+            <!-- 动态渲染日志行 -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 分页栏 (参考图 1) -->
+      <div class="pagination-bar" id="logs-pagination">
+        <div class="pagination-info" id="pagination-info">
+          显示第 0 到 0 条，共 0 条记录
+        </div>
+        <div class="pagination-controls">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-prev-page">
+            &lt; 上一页
+          </button>
+          <span class="page-current" id="text-current-page">1</span>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-next-page">
+            下一页 &gt;
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 4: 图片管理 (本地持久化图片清理与查看) ==================== -->
+    <section class="tab-pane" id="tab-images">
+      <div class="card">
+        <div class="pane-header" style="margin-bottom: 20px;">
+          <div class="stat-badges">
+            <div class="stat-badge total">
+              <span class="stat-num" id="stat-images-count">0</span>
+              <span class="stat-label">已落盘图片</span>
+            </div>
+            <div class="stat-badge active">
+              <span class="stat-num" id="stat-images-size">0 B</span>
+              <span class="stat-label">💾 磁盘占用</span>
+            </div>
+          </div>
+
+          <div class="header-actions">
+            <button type="button" class="btn btn-secondary" id="btn-refresh-images">
+              <span>🔄</span> 刷新列表
+            </button>
+            <button type="button" class="btn btn-outline-danger" id="btn-clear-all-images">
+              <span>🗑️</span> 一键清空所有图片
+            </button>
+          </div>
+        </div>
+
+        <!-- 图片画廊网格 -->
+        <div id="images-gallery-grid" class="image-gallery-grid">
+          <!-- 动态装填图片卡片 -->
+        </div>
+
+        <!-- 空状态占位 -->
+        <div id="images-empty-state" class="empty-placeholder" style="display: none; padding: 60px 20px; text-align: center;">
+          <div style="font-size: 48px; margin-bottom: 12px;">🖼️</div>
+          <div style="font-size: 16px; font-weight: 600; color: var(--text-color);">暂无已保存的图片资产</div>
+          <div style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">当你在测试页面或通过 API 生成图片后，图片将自动安全持久化到本地并在此展示。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 5: 测试页面 (正常 Chat 对话界面) ==================== -->
+    <section class="tab-pane" id="tab-test">
+      <div class="card chat-studio-card">
+        <!-- 顶部工具栏：账号选择、模型继承选择、清空按钮 -->
+        <div class="chat-studio-header">
+          <div class="chat-controls-left">
+            <div class="chat-control-item">
+              <label for="select-test-account" class="chat-control-label">指定账号:</label>
+              <select id="select-test-account" class="input-text chat-select">
+                <option value="">自动调度 (Round-Robin 账号池)</option>
+              </select>
+            </div>
+            <div class="chat-control-item">
+              <label for="select-test-model" class="chat-control-label">选择模型 (已继承检测结果):</label>
+              <select id="select-test-model" class="input-text chat-select">
+                <!-- 动态自动继承自已检测的账号模型列表 -->
+              </select>
+            </div>
+          </div>
+          <div class="chat-controls-right">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-chat">
+              <span>🧹</span> 清空会话
+            </button>
+          </div>
+        </div>
+
+        <!-- 中间聊天记录流 -->
+        <div class="chat-messages-container" id="chat-messages-container">
+          <div class="chat-welcome-banner" id="chat-welcome-banner">
+            <div class="chat-welcome-icon">💬</div>
+            <div class="chat-welcome-title">Gemini 对话与生图在线测试</div>
+            <div class="chat-welcome-desc">
+              在此直接向已配置账号发送对话消息或生图指令（如 <em>"画一只在赛博朋克霓虹灯下的猫"</em> 或 <em>"用两句话解释量子纠缠"</em>）。
+              <br>模型下拉框已直接继承该账号检测出来的实际模型，调用过程将自动入库审计日志。
+            </div>
+          </div>
+        </div>
+
+        <!-- 底部输入栏 -->
+        <div class="chat-input-bar">
+          <textarea id="input-chat-message" class="chat-textarea" rows="2" placeholder="输入对话提示词或生图要求... (Enter 发送，Shift+Enter 换行)"></textarea>
+          <button type="button" class="btn btn-primary btn-chat-send" id="btn-send-chat">
+            <span>🚀</span> 发送
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================== 弹窗 1: 添加/编辑账号 Modal ==================== -->
+  <div class="modal-backdrop" id="modal-account" style="display:none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-account-title">添加 Gemini 账号</h3>
+        <button type="button" class="btn-close" id="btn-close-account-modal">✖</button>
+      </div>
+      <form id="form-account" class="modal-body">
+        <input type="hidden" id="input-acc-id">
+
+        <div class="form-field">
+          <label for="input-acc-remark" class="field-label">账号备注名称 <span class="required">*</span>:</label>
+          <input type="text" id="input-acc-remark" class="input-text" placeholder="如：主力账号 / 1 / 日常测试" required>
+          <span class="field-help">作为此账号在系统的显示名称与唯一标识</span>
+        </div>
+
+        <div class="form-field">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="field-label" style="margin-bottom: 0;">Cookie 凭据录入方式 <span class="required">*</span>:</label>
+            <div class="cookie-mode-toggle" style="margin-bottom: 0;">
+              <button type="button" class="btn-toggle active" id="btn-mode-smart">📋 智能自动拆分</button>
+              <button type="button" class="btn-toggle" id="btn-mode-manual">✍️ 手动填写两个Key</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 模式 1: 智能粘贴区 -->
+        <div class="form-field" id="container-smart-cookie">
+          <textarea id="input-acc-cookie" class="input-textarea" rows="3" placeholder="📋 在此粘贴包含 __Secure-1PSID 与 __Secure-1PSIDTS 的完整 JSON、数组或标头，粘贴后下方将实时自动拆分填入两个 Key！"></textarea>
+          <div id="parse-feedback" style="display: none; font-size: 12px; color: var(--success); font-weight: 500; margin-top: 6px; padding: 6px 12px; background: var(--success-bg); border: 1px solid var(--success-border); border-radius: var(--radius-sm);">
+            ✨ 已成功自动拆分 2 个 Key，已为您实时填入下方！
+          </div>
+        </div>
+
+        <!-- 拆分结果 / 手动填写的两个 Key -->
+        <div id="container-manual-cookie" style="display: flex; flex-direction: column; gap: 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
+            <span id="manual-cookie-title">🔍 实时自动拆分结果:</span>
+            <span id="manual-cookie-help" style="font-size: 11px; color: var(--text-dim);">支持直接在框内微调或手工输入</span>
+          </div>
+          <div class="form-field" style="margin-bottom: 0;">
+            <label for="input-acc-psid" class="field-label">Key 1: <code>__Secure-1PSID</code> (长效Session凭据) <span class="required">*</span>:</label>
+            <input type="text" id="input-acc-psid" class="input-text font-mono" placeholder="g.a8i... / g.a000... (必填)">
+          </div>
+          <div class="form-field" style="margin-bottom: 0;">
+            <label for="input-acc-psidts" class="field-label">Key 2: <code>__Secure-1PSIDTS</code> (短效滚动Token / 网页端必需):</label>
+            <input type="text" id="input-acc-psidts" class="input-text font-mono" placeholder="sidts-... (建议填写)">
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label for="input-acc-proxy" class="field-label">独立代理 (可选，留空则沿用全局代理):</label>
+          <input type="text" id="input-acc-proxy" class="input-text" placeholder="http://127.0.0.1:7890">
+        </div>
+
+        <div class="form-field checkbox-field">
+          <label class="checkbox-label">
+            <input type="checkbox" id="check-acc-enabled" checked> 启用该账号
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-account-modal">取消</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-account">保存账号</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== 弹窗 2: 日志详情 Modal (参考图 2 成功态、图 3 失败态) ==================== -->
+  <div class="modal-backdrop" id="modal-log-detail" style="display:none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3 class="modal-title">日志详情</h3>
+        <button type="button" class="btn-close" id="btn-close-log-modal">✖ 关闭</button>
+      </div>
+
+      <div class="modal-body" id="log-detail-content">
+        <!-- 动态装填图2/图3内容 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 弹窗 3: 网页历史会话 Modal ==================== -->
+  <div class="modal-backdrop" id="modal-chats" style="display:none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-chats-title">Gemini 网页端历史会话</h3>
+        <button type="button" class="btn-close" id="btn-close-chats-modal">✖</button>
+      </div>
+
+      <div class="modal-body chats-modal-body">
+        <div class="chats-sidebar" id="chats-list-area">
+          <div class="chats-sidebar-header">会话列表</div>
+          <div class="chats-items" id="chats-items">
+            <!-- 动态渲染会话列表 -->
+          </div>
+        </div>
+
+        <div class="chats-main" id="chats-turns-area">
+          <div class="chats-turns-placeholder">请从左侧选择一个会话查看对话详情</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 弹窗 5: 账号保活与巡检日志 Modal ==================== -->
+  <div class="modal-backdrop" id="modal-health-logs" style="display:none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3 class="modal-title">🛡️ <span id="health-log-title">账号检查日志</span></h3>
+        <button type="button" class="btn-close" id="btn-close-health-modal">✖ 关闭</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- 统计概览条 -->
+        <div class="health-summary-bar">
+          <div class="health-summary-item">
+            <span class="health-summary-num" id="health-stat-checks">0</span>
+            <span class="health-summary-label">🔍 累计有效性检查</span>
+          </div>
+          <div class="health-summary-item">
+            <span class="health-summary-num" id="health-stat-keepalives">0</span>
+            <span class="health-summary-label">🔄 Cookie 自动轮换次数</span>
+          </div>
+          <div class="health-summary-item">
+            <span class="health-summary-num font-mono" id="health-stat-last-check" style="font-size: 13px;">-</span>
+            <span class="health-summary-label">⏰ 最近一次巡检时间</span>
+          </div>
+          <div class="health-summary-item">
+            <span class="health-summary-num font-mono" id="health-stat-last-keepalive" style="font-size: 13px;">-</span>
+            <span class="health-summary-label">🛡️ 最近一次保活轮换</span>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin: 16px 0 10px 0;">
+          <h4 style="font-size: 14px; font-weight: 600; color: var(--text-main); margin: 0;">📜 历史有效性巡检与会话保活轨迹</h4>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-health-logs">
+            <span>🔄</span> 刷新
+          </button>
+        </div>
+
+        <!-- 日志表格容器 -->
+        <div class="table-responsive" style="max-height: 380px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width: 145px;">时间</th>
+                <th style="width: 110px;">操作类型</th>
+                <th style="width: 85px;">状态</th>
+                <th>检查详情 / 配额快照</th>
+                <th style="width: 70px;">耗时</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-health-logs">
+              <!-- 动态装填 -->
+            </tbody>
+          </table>
+        </div>
+
+        <div id="health-logs-empty" class="empty-placeholder" style="display: none; padding: 40px 20px; text-align: center;">
+          <div style="font-size: 32px; margin-bottom: 8px;">📋</div>
+          <div style="font-size: 14px; color: var(--text-muted);">该账号暂无历史巡检或保活记录</div>
+          <div style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">系统执行后台自动健康巡检或点击「⚡ 检测」后将自动记录于此。</div>
+        </div>
+      </div>
+    </div>
+  <!-- ==================== 弹窗 6: 面板登录 Modal ==================== -->
+  <div class="modal-backdrop" id="modal-login" style="display:none;">
+    <div class="modal-dialog modal-sm">
+      <div class="modal-header">
+        <h3 class="modal-title">🔒 管理员访问认证</h3>
+      </div>
+      <form id="form-login" class="modal-body">
+        <p class="login-tip">当前系统已开启面板密码保护，请输入访问密码以继续：</p>
+        <div class="form-field">
+          <input type="password" id="input-login-password" class="input-text" placeholder="输入面板管理密码" required autofocus>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-block" id="btn-submit-login">确认登录</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 全局轻量通知 Toast 容器 -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

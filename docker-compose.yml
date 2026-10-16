@@ -1,0 +1,19 @@
+services:
+  gemini-manager:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-zerohiz}/gminiweb:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gemini-manager
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - PANEL_PASSWORD=  # 可选：面板管理访问密码，留空则免密
+      - API_KEY=         # 可选：对外 OpenAI 兼容代理网关密钥，留空则免密
+      - GLOBAL_PROXY=    # 可选：默认全局网络代理，如 http://127.0.0.1:7890
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"

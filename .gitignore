@@ -1,0 +1,20 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+bug.md
+# Runtime data directory (ignore all files and subdirectories under data/)
+data/
+.upstream_cache/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.9.0
+httpx>=0.27.0
+aiosqlite>=0.20.0
+curl-cffi>=0.16.2
+gemini-webapi>=2.1.1
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
