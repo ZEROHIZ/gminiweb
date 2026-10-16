@@ -88,4 +88,26 @@
   1. `tests/test_api_endpoints.py::test_guest_single_model_auto_expired` 模拟 Google 降级仅 1 模型场景，100% 自动断定为 `EXPIRED` 并禁用；
   2. 21 项测试全量通过。
 
+---
+
+### [BUG-007] Google 会话轮换期间新旧 Token 并存导致旧凭据遮蔽新凭据（Stale Cookie Shadowing）
+- **发生时间**：2026-10-16
+- **影响模块**：`backend/account_manager.py` (`extract_auth_cookies`, `parse_cookie_input`, `select_freshest_cookie`), `tests/test_cookie_parser.py`
+- **现象描述**：
+  在浏览器或底层 `curl_cffi` 的 CookieJar 中，当 Google 触发会话轮换时，常出现旧的 `__Secure-1PSIDTS`（尚未被清理或不同子域）与刚下发的新 `__Secure-1PSIDTS` 短暂并存的现象。在此瞬间如果系统提取凭据，由于原逻辑采取简单的循环遍历赋值，若旧 Token 处于迭代末尾，会导致旧值覆盖最新值，误判为“Cookie 未改变”，导致最新轮换凭据丢失。
+- **根本原因 (Root Cause)**：
+  1. `extract_auth_cookies` 和 `parse_cookie_input` 缺乏对同名候选 Cookie 的状态（`is_expired`）、到期时间戳（`expires`/`expirationDate`）及根域名（`.google.com`）的智能权衡；
+  2. 简单的后值覆盖（Last-Win）机制无法保证选中的是 Google 刚刚颁发的最鲜活、有效期最长远的那一枚。
+- **解决方案 (Solution)**：
+  1. 新增 `select_freshest_cookie` 智能选优算法：
+     - 自动剔除空值及 `deleted` 无效值；
+     - 未过期 Cookie（`not is_expired` 且 `expires > now`）绝对优先于已过期 Cookie；
+     - 依据到期时间戳 `expires` 降序优选（Google 颁发的新 Token 有效期必定比旧 Token 更加长远）；
+     - 根域名 `.google.com` 优先于局部子域名；
+  2. 全面升级 `parse_cookie_input` 导入解析与 `extract_auth_cookies` 运行时提取逻辑。
+- **防退化验证**：
+  1. `tests/test_cookie_parser.py::test_parse_multiple_cookies_with_expiry_order` 模拟旧 Token 排在末尾时依然 100% 选中最长远新 Token；
+  2. `tests/test_cookie_parser.py::test_extract_auth_cookies_multiple_in_jar` 模拟底包 CookieJar 并存新旧凭据时精准提取；
+  3. 23 项自动化测试 100% 全部通过。
+
 

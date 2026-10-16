@@ -7,7 +7,7 @@ Gemini 多账号生命周期与账号池管理器。负责账号配置持久化�
 Cookie 自动轮换刷新监听与持久化回写，以及最少活跃连接数优先（Least-Connections）智能调度。
 
 主要功能：
-1. parse_cookie_input: 兼容解析纯键值、包裹字典、浏览器插件 JSON 数组及 Cookie 标头。
+1. parse_cookie_input & select_freshest_cookie: 兼容解析多种格式 Cookie，并基于到期时间戳与有效性智能优选最新鲜 Token，防范轮换期间新旧 Token 并存遮蔽。
 2. AccountModel / PublicAccountModel: 账号数据模型与面向前端的脱敏模型（含独立并发与活跃连接展示）。
 3. AccountManager: 核心单例，负责账号增删改查、初始化预热、动态可配置并发信号量隔离、Least-Connections 负载均衡与 Cookie 自动持久化回写。
 """
@@ -30,6 +30,60 @@ import time
 from backend.auth import mask_credential
 from backend.settings_manager import settings_manager
 from backend.log_service import log_service
+
+
+def select_freshest_cookie(candidates: list[dict]) -> Tuple[str, float | None]:
+    """
+    从一组同名候选 Cookie 中智能挑选最鲜活、有效且未来有效时长最长的凭据。
+    
+    设计理念（彻底杜绝 Google 轮换期间新旧 Token 短暂并存导致的旧凭据遮蔽）：
+    1. 剔除空值或被置为 'deleted' 的无效凭据；
+    2. 状态判定：已过期（is_expired 为 True 或 expires <= now）权重大幅度降低；
+    3. 到期时间优先：Google 颁发的新 Token 其 expires 必定晚于旧 Token，按 expires 降序选最新鲜的；
+    4. 根域优先：优先选择 .google.com 规范根域，避免局部子域名残留。
+    """
+    if not candidates:
+        return "", None
+
+    now = time.time()
+
+    def score_candidate(item: dict) -> Tuple[int, float, int]:
+        val = str(item.get("value") or "").strip()
+        if not val or val.lower() == "deleted":
+            return (-1, 0.0, 0)
+
+        exp = item.get("expires")
+        if exp is None:
+            exp = item.get("expirationDate")
+
+        try:
+            exp_float = float(exp) if exp is not None else 0.0
+        except (ValueError, TypeError):
+            exp_float = 0.0
+
+        is_exp = bool(item.get("is_expired", False))
+        if exp_float > 0 and exp_float <= now:
+            is_exp = True
+
+        valid_score = 0 if is_exp else 1
+        domain = str(item.get("domain") or "")
+        domain_score = 1 if domain.startswith(".") else 0
+        return (valid_score, exp_float, domain_score)
+
+    valid_candidates = [
+        c for c in candidates
+        if str(c.get("value") or "").strip() and str(c.get("value")).strip().lower() != "deleted"
+    ]
+    if not valid_candidates:
+        return "", None
+
+    best = max(valid_candidates, key=score_candidate)
+    exp = best.get("expires") if best.get("expires") is not None else best.get("expirationDate")
+    try:
+        exp_val = float(exp) if exp is not None else None
+    except (ValueError, TypeError):
+        exp_val = None
+    return str(best.get("value") or "").strip(), exp_val
 
 
 def parse_cookie_input(raw: Any) -> Tuple[str, str, float | None, str]:
@@ -56,21 +110,27 @@ def parse_cookie_input(raw: Any) -> Tuple[str, str, float | None, str]:
     extracted_email = ""
 
     if isinstance(raw, list):
+        psid_candidates: list[dict] = []
+        psidts_candidates: list[dict] = []
         for item in raw:
             if not isinstance(item, dict):
                 continue
             name = item.get("name") or item.get("key") or ""
             val = str(item.get("value") or "").strip()
+            exp = item.get("expirationDate") if item.get("expirationDate") is not None else item.get("expires")
+            domain = item.get("domain") or ""
             if name == "__Secure-1PSID":
-                psid = val
-                exp_date = item.get("expirationDate") or item.get("expires") or exp_date
+                psid_candidates.append({"value": val, "expires": exp, "domain": domain})
             elif name == "__Secure-1PSIDTS":
-                psidts = val
-                exp_date = item.get("expirationDate") or item.get("expires") or exp_date
+                psidts_candidates.append({"value": val, "expires": exp, "domain": domain})
             elif "email" in name.lower() or "user" in name.lower() or "@" in val:
                 m = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", val)
                 if m and not extracted_email:
                     extracted_email = m.group(0)
+
+        psid, exp_psid = select_freshest_cookie(psid_candidates)
+        psidts, exp_psidts = select_freshest_cookie(psidts_candidates)
+        exp_date = exp_psidts or exp_psid
 
     elif isinstance(raw, dict):
         if "cookies" in raw:
@@ -110,23 +170,43 @@ def parse_cookie_input(raw: Any) -> Tuple[str, str, float | None, str]:
 
 
 def extract_auth_cookies(cookies: Any) -> Tuple[str | None, str | None]:
-    """从 curl_cffi Cookies 提取最新的 __Secure-1PSID 与 __Secure-1PSIDTS"""
-    psid = None
-    psidts = None
+    """从 curl_cffi Cookies 提取真正最新、未过期的 __Secure-1PSID 与 __Secure-1PSIDTS"""
+    psid_candidates: list[dict] = []
+    psidts_candidates: list[dict] = []
+
     if hasattr(cookies, "jar"):
         for c in cookies.jar:
             name = getattr(c, "name", None)
             val = getattr(c, "value", None)
+            domain = getattr(c, "domain", "")
+            expires = getattr(c, "expires", None)
+            is_expired = False
+            if hasattr(c, "is_expired") and callable(c.is_expired):
+                try:
+                    is_expired = c.is_expired()
+                except Exception:
+                    pass
+            item = {
+                "name": name,
+                "value": val,
+                "domain": domain,
+                "expires": expires,
+                "is_expired": is_expired,
+            }
             if name == "__Secure-1PSID":
-                psid = val
+                psid_candidates.append(item)
             elif name == "__Secure-1PSIDTS":
-                psidts = val
-    if hasattr(cookies, "get"):
-        if not psid:
-            psid = cookies.get("__Secure-1PSID")
-        if not psidts:
-            psidts = cookies.get("__Secure-1PSIDTS")
-    return psid, psidts
+                psidts_candidates.append(item)
+
+    best_psid, _ = select_freshest_cookie(psid_candidates)
+    best_psidts, _ = select_freshest_cookie(psidts_candidates)
+
+    if not best_psid and hasattr(cookies, "get"):
+        best_psid = cookies.get("__Secure-1PSID")
+    if not best_psidts and hasattr(cookies, "get"):
+        best_psidts = cookies.get("__Secure-1PSIDTS")
+
+    return best_psid or None, best_psidts or None
 
 
 class AccountModel(BaseModel):
