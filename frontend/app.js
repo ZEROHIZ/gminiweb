@@ -1196,10 +1196,11 @@ async function loadAccountHealthLogs(accId) {
         ? '<span class="badge-keepalive">🛡️ Cookie 自动轮换</span>' 
         : '<span class="badge-healthcheck">⚡ 有效性巡检</span>';
 
-      const isSuccess = log.status === '已完成' || log.status_code === 200;
-      const statusBadge = isSuccess 
-        ? '<span class="badge badge-success">正常</span>' 
-        : '<span class="badge badge-danger">异常</span>';
+      const isExpired = log.status === 'EXPIRED' || log.status_code === 401;
+      const isSuccess = !isExpired && (log.status === '已完成' || (log.status !== '失败' && log.status_code === 200));
+      const statusBadge = isExpired 
+        ? '<span class="badge badge-danger">已失效</span>' 
+        : (isSuccess ? '<span class="badge badge-success">正常</span>' : '<span class="badge badge-warning">异常</span>');
 
       tr.innerHTML = `
         <td class="font-mono" style="font-size:12px; color:var(--text-dim);">${escapeHtml(log.created_at)}</td>

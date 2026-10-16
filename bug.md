@@ -68,3 +68,24 @@
   2. 18 项自动化测试 100% 全部通过；
   3. 实测 `GET /media/images/...` 毫秒级返回 `image/jpeg`（2.65 MB），零 403。
 
+---
+
+### [BUG-006] 账号巡检读取本地内存缓存（耗时 0s 且未触发保活）及降级访客（仅 1 模型）漏判
+- **发生时间**：2026-10-16
+- **影响模块**：`backend/account_manager.py` (`check_health`, `get_or_create_client`), `frontend/app.js` (`loadAccountHealthLogs`)
+- **现象描述**：
+  1. 巡检日志中自动巡检耗时全部恒为 `0s`，且从未触发过一次 Cookie 自动轮换保活；
+  2. 当账号 Cookie 实际在 Google 端失效后，Google 降级为匿名访客仅提供 1 个模型（`gemini-flash-lite`），但巡检依然显示“正常”并放行。
+- **根本原因 (Root Cause)**：
+  1. `get_or_create_client` 命中内存缓存 `self._clients` 时直接复用旧对象，后续 `list_models` 和 `quotas` 全是读取内存静态变量，根本没有向 Google 发起真实网络通信，导致耗时 0s 且 Google 无法在响应头下发新 Cookie（无法触发保活）；
+  2. Google Web 端对于 Cookie 失效的会话会静默降级为 Guest（匿名访客），仅开放 1 个 `gemini-flash-lite` 模型，而系统只判断了 `account_status == UNAUTHENTICATED`，未对模型数量与 Pro/Flash 权限模型进行严格校验；
+  3. 前端判断日志成功态时由于 `status_code === 200` 依然显示为“正常”绿标。
+- **解决方案 (Solution)**：
+  1. `get_or_create_client` 增加 `force_refresh=True` 参数；`check_health` 强制执行真实网络重连与握手，打通 Google 动态下发 Cookie 的通道，真正实现网络探活与心跳保活；
+  2. 严格重构健康判定：当可用模型 `<= 1`、缺失 `gemini-pro`/`gemini-flash` 等正规模型、或未授权时，彻底判定为 `EXPIRED`（已失效）并自动禁用；
+  3. 前端修正判定逻辑，对于 `EXPIRED` 明确标红展示 `[已失效]`。
+- **防退化验证**：
+  1. `tests/test_api_endpoints.py::test_guest_single_model_auto_expired` 模拟 Google 降级仅 1 模型场景，100% 自动断定为 `EXPIRED` 并禁用；
+  2. 21 项测试全量通过。
+
+

@@ -391,14 +391,23 @@ class AccountManager:
         """活动请求计数器 -1"""
         self._active_connections[account_id] = max(0, self._active_connections.get(account_id, 0) - 1)
 
-    async def get_or_create_client(self, account_id: str, timeout: float | None = None) -> GeminiClient:
-        """获取或创建 GeminiClient 实例"""
+    async def get_or_create_client(
+        self,
+        account_id: str,
+        timeout: float | None = None,
+        force_refresh: bool = False,
+    ) -> GeminiClient:
+        """获取或创建 GeminiClient 实例（支持 force_refresh 强制真实网络重连）"""
         acc = self.get_account(account_id)
         if not acc:
             raise ValueError(f"账号不存在: {account_id}")
 
-        if account_id in self._clients:
+        if not force_refresh and account_id in self._clients:
             return self._clients[account_id]
+
+        # 若强制刷新，安全释放旧连接
+        if account_id in self._clients:
+            self._dispose_client(account_id)
 
         settings = settings_manager.get_settings()
         req_timeout = timeout or float(settings.timeout_seconds)
@@ -478,7 +487,7 @@ class AccountManager:
         return False
 
     async def check_health(self, account_id: str, source: str = "auto") -> dict:
-        """对指定账号执行单次健康检查、配额提取与模型刷新并记录日志"""
+        """对指定账号执行单次真实网络健康检查、配额提取与模型刷新并记录日志"""
         acc = self.get_account(account_id)
         if not acc:
             return {"status": "ERROR", "message": "账号不存在"}
@@ -487,9 +496,11 @@ class AccountManager:
         settings = settings_manager.get_settings()
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         acc.last_checked_at = now_str
+        summary_source = "后台自动巡检" if source == "auto" else "手动触发检测"
 
         try:
-            client = await self.get_or_create_client(account_id)
+            # 必须使用 force_refresh=True 进行真实的 Google 网络握手与模型/Token 刷新
+            client = await self.get_or_create_client(account_id, force_refresh=True)
 
             # 刷新可用模型
             try:
@@ -529,45 +540,72 @@ class AccountManager:
 
             acc.quota_info = quota_dict
 
-            # 校验账号底层状态
+            # 严格校验账号底层状态与模型丰富度
             account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
-            if account_status == AccountStatus.AVAILABLE:
-                acc.status = "ACTIVE"
-            elif account_status == AccountStatus.UNAUTHENTICATED:
+            has_pro_or_flash = any(
+                m in acc.models
+                for m in ("gemini-pro", "gemini-flash", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash")
+            )
+
+            # 核心判断标准：
+            # 1. 明确返回未授权 UNAUTHENTICATED
+            # 2. 可用模型 <= 1（Google 对 Cookie 过期的会话会静默降级为 Guest，仅开放单一 flash-lite 模型）
+            # 3. 缺失正规登录才有的 Pro 或标准 Flash 模型
+            is_expired = (
+                account_status == AccountStatus.UNAUTHENTICATED
+                or len(acc.models) <= 1
+                or not has_pro_or_flash
+            )
+
+            if is_expired:
                 acc.status = "EXPIRED"
                 if settings.auto_disable_expired:
                     acc.is_enabled = False
+                summary = f"[{summary_source}] 账号凭据失效（降级为匿名访客，仅可用 {len(acc.models)} 个模型）"
+                log_status = "EXPIRED"
+                status_code = 401
+                error_reason = "Cookie 已失效或被 Google 静默降级为匿名访客"
+            elif account_status == AccountStatus.AVAILABLE:
+                acc.status = "ACTIVE"
+                summary = f"[{summary_source}] 账号状态正常 | 配额正常 | 可用模型: {len(acc.models)}"
+                log_status = "已完成"
+                status_code = 200
+                error_reason = ""
             else:
                 acc.status = "RESTRICTED"
+                summary = f"[{summary_source}] 账号状态受限 | 可用模型: {len(acc.models)}"
+                log_status = "受限"
+                status_code = 200
+                error_reason = f"账号状态受限: {getattr(account_status, 'name', str(account_status))}"
 
             # 持久化回写轮换 Cookie
             self.persist_cookies_if_changed(account_id, client)
             self.save()
 
-            # 记录巡检成功日志
             duration = round(time.time() - start_time, 2)
-            summary_source = "后台自动巡检" if source == "auto" else "手动触发检测"
-            summary = f"[{summary_source}] 账号状态正常 | 配额正常 | 可用模型: {len(acc.models)}"
             try:
                 await log_service.add_log(
                     operation="health_check",
                     token_email=acc.remark or acc.email or acc.id,
-                    status="已完成" if acc.status == "ACTIVE" else acc.status,
+                    status=log_status,
                     progress="100%",
-                    status_code=200,
+                    status_code=status_code,
                     summary=summary,
                     duration=duration,
                     request_data={"account_id": acc.id, "remark": acc.remark, "source": source},
                     response_data={"status": acc.status, "models": acc.models, "quota": acc.quota_info},
+                    error_reason=error_reason,
                 )
             except Exception:
                 pass
 
-            return {"status": acc.status, "models": acc.models, "quota": acc.quota_info}
+            return {"status": acc.status, "models": acc.models, "quota": acc.quota_info, "duration": duration}
 
         except Exception as e:
+            duration = round(time.time() - start_time, 2)
             err_msg = str(e)
-            if isinstance(e, AuthError) or "UNAUTHENTICATED" in err_msg.upper():
+            is_auth_error = isinstance(e, AuthError) or "UNAUTHENTICATED" in err_msg.upper()
+            if is_auth_error:
                 acc.status = "EXPIRED"
                 if settings.auto_disable_expired:
                     acc.is_enabled = False
@@ -575,17 +613,14 @@ class AccountManager:
                 acc.status = "RESTRICTED"
             self.save()
 
-            # 记录巡检异常日志
-            duration = round(time.time() - start_time, 2)
-            summary_source = "后台自动巡检" if source == "auto" else "手动触发检测"
             summary = f"[{summary_source}] 巡检异常: {err_msg[:60]}"
             try:
                 await log_service.add_log(
                     operation="health_check",
                     token_email=acc.remark or acc.email or acc.id,
-                    status="失败",
+                    status="EXPIRED" if is_auth_error else "失败",
                     progress="0%",
-                    status_code=401 if acc.status == "EXPIRED" else 500,
+                    status_code=401 if is_auth_error else 500,
                     summary=summary,
                     duration=duration,
                     request_data={"account_id": acc.id, "remark": acc.remark, "source": source},
@@ -594,7 +629,7 @@ class AccountManager:
             except Exception:
                 pass
 
-            return {"status": acc.status, "error": err_msg}
+            return {"status": acc.status, "error": err_msg, "duration": duration}
 
     async def check_all_health(self, concurrency: int = 5) -> dict:
         """并发限制巡检所有可用账号"""
@@ -602,7 +637,7 @@ class AccountManager:
 
         async def _check_one(acc_id: str):
             async with sem:
-                return acc_id, await self.check_health(acc_id)
+                return acc_id, await self.check_health(acc_id, source="auto")
 
         tasks = [_check_one(acc.id) for acc in self._accounts]
         results = await asyncio.gather(*tasks, return_exceptions=True)

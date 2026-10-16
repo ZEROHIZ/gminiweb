@@ -281,5 +281,59 @@ def test_configurable_concurrency_and_least_connections(client):
     account_manager.delete_account(acc_id)
 
 
+def test_guest_single_model_auto_expired(monkeypatch):
+    """测试当 Google 仅返回 1 个模型（访客模式）或缺失 Pro/Flash 时，必须判定为 EXPIRED"""
+    import asyncio
+    from backend.account_manager import account_manager, AccountModel
+    from gemini_webapi.constants import AccountStatus
+
+    # 构造假 client
+    class MockAvailableModel:
+        def __init__(self, name):
+            self.model_name = name
+            self.is_available = True
+
+    class MockGuestClient:
+        account_status = AccountStatus.AVAILABLE
+        quotas = {}
+        usage_info = None
+        cookies = None
+
+        async def init(self, **kwargs):
+            pass
+
+        def list_models(self):
+            # 模拟 Google 降级访客模式，只返回 1 个 flash-lite 模型
+            return [MockAvailableModel("gemini-flash-lite")]
+
+    test_acc = AccountModel(
+        id="acc_test_guest",
+        email="guest_test@example.com",
+        remark="测试访客账号",
+        secure_1psid="g.a000testpsid",
+        secure_1psidts="sidts-test",
+        is_enabled=True,
+        status="ACTIVE",
+    )
+    account_manager._accounts.append(test_acc)
+
+    async def mock_get_or_create(*args, **kwargs):
+        return MockGuestClient()
+
+    monkeypatch.setattr(account_manager, "get_or_create_client", mock_get_or_create)
+
+    # 执行健康检查
+    res = asyncio.run(account_manager.check_health("acc_test_guest", source="auto"))
+
+    # 验证账号状态被严格判定为 EXPIRED
+    assert res["status"] == "EXPIRED"
+    assert test_acc.status == "EXPIRED"
+    assert test_acc.is_enabled is False
+
+    # 清理
+    account_manager.delete_account("acc_test_guest")
+
+
+
 
 
