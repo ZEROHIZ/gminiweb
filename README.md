@@ -47,7 +47,53 @@
 
 ## 🚀 快速开始
 
-### 方式一：本地虚拟环境运行
+### 方式一：Docker 一行命令极速启动（推荐，直接复制）
+
+Linux / macOS:
+```bash
+docker run -d --name gemini-manager --restart unless-stopped -p 8000:8000 -v $(pwd)/data:/app/data -e TZ=Asia/Shanghai -l "com.centurylinklabs.watchtower.enable=true" ghcr.io/zerohiz/gminiweb:latest
+```
+
+Windows (PowerShell):
+```powershell
+docker run -d --name gemini-manager --restart unless-stopped -p 8000:8000 -v ${PWD}/data:/app/data -e TZ=Asia/Shanghai -l "com.centurylinklabs.watchtower.enable=true" ghcr.io/zerohiz/gminiweb:latest
+```
+
+> **说明**：宿主机若已运行 Watchtower，会自动监控并无感更新该容器；启动后数据和日志自动持久化在本地 `./data` 目录下，在浏览器中打开 `http://<服务器IP或127.0.0.1>:8000` 即可直接使用。
+
+---
+
+### 方式二：Docker Compose 部署
+
+在服务器创建 `docker-compose.yml`：
+
+```yaml
+services:
+  gemini-manager:
+    image: ghcr.io/zerohiz/gminiweb:latest
+    container_name: gemini-manager
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - PANEL_PASSWORD=   # 可选：面板管理访问密码，留空则免密
+      - API_KEY=          # 可选：对外网关访问密钥，留空则免密
+      - GLOBAL_PROXY=     # 可选：全局网络代理，如 http://127.0.0.1:7890
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+```
+
+启动容器：
+```bash
+docker compose up -d
+```
+
+---
+
+### 方式三：本地 Python 环境直接运行
 
 ```bash
 # 1. 创建虚拟环境并激活
@@ -64,36 +110,6 @@ pip install -r backend/requirements.txt
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 打开浏览器访问：`http://127.0.0.1:8000` 即可进入管理面板。
-
----
-
-### 方式二：Docker Compose 一键部署
-
-在服务器创建 `docker-compose.yml`：
-
-```yaml
-services:
-  gemini-manager:
-    image: ghcr.io/<你的GitHub用户名>/gemini-account-manager:latest
-    container_name: gemini-manager
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data
-    environment:
-      - TZ=Asia/Shanghai
-      - PANEL_PASSWORD=your_panel_password   # 可选：面板管理访问密码，留空则免密
-      - API_KEY=sk-gemini-secret-key          # 可选：对外网关访问密钥，留空则免密
-      - GLOBAL_PROXY=                         # 可选：全局网络代理，如 http://127.0.0.1:7890
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-```
-
-启动容器：
-```bash
-docker compose up -d
-```
 
 ---
 
